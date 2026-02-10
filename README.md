@@ -16,6 +16,17 @@ Predict in-game win probability from play-by-play: **fetch** → **parse** → *
 **Features:** time left, score differential, period, possession, home court, **home/away ELO** (per season).  
 **Label:** did the home team win the game?
 
+### Model performance (typical run, 80/20 game split)
+
+| Metric | Value | Meaning |
+|--------|--------|--------|
+| **Validation accuracy** | ~76% | Fraction of events where the model’s predicted winner (home vs away) matches the actual game winner. |
+| **Brier score** | ~0.16 | Mean squared error between predicted P(home win) and 0/1 outcome. Lower is better; 0.25 = no better than 50%; ~0.16 indicates probabilities are somewhat calibrated. |
+| **Log loss** | ~0.48 | Proper scoring rule for probabilities; lower is better. |
+| **First 8 min accuracy** | ~67% | Accuracy on events in the first 8 minutes only — where ELO helps most (score is still close). |
+
+**Coefficients (what drives the model):** Score differential has the largest weight (the model mostly “follows the score”). Home/away ELO add team strength so early-game predictions aren’t 50/50. Time left and period have smaller effects. The model outputs **P(home wins)** at each moment; Brier and calibration reflect how reliable those probability numbers are.
+
 ---
 
 ## Quick start
@@ -75,7 +86,7 @@ python run_replay.py --no-elo        # skip ELO (no manifest needed)
 
 - **Split:** 80% / 20% of **games** (not rows) for train/val so no game leaks across splits.
 - **Scale:** `StandardScaler` on train only.
-- **Model:** `LogisticRegression`; reports validation log loss, accuracy, and accuracy in the **first 8 minutes** (where ELO matters most).
+- **Model:** `LogisticRegression`; reports validation log loss, **Brier score**, accuracy, and accuracy in the **first 8 minutes** (where ELO matters most).
 
 ```bash
 python run_train.py
