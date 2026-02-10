@@ -2,6 +2,8 @@
 data/raw/*.csv
 data/parsed/*.csv
 data/parsed/games/
+# Frontend: current-season games (run run_frontend_data.py)
+data/frontend/
 
 # Python
 __pycache__/

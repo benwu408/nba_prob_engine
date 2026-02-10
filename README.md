@@ -81,15 +81,44 @@ python run_replay.py --no-elo        # skip ELO (no manifest needed)
 python run_train.py
 ```
 
+### Frontend data (current season — not for training)
+
+To run the **existing model** on 2025-26 games (e.g. for a frontend where you pick a game and see win prob play-by-play), fetch and parse into a separate directory so training data stays untouched:
+
+```bash
+python run_frontend_data.py           # fetch all 2025-26 games so far, parse + ELO
+python run_frontend_data.py --limit 20   # test with 20 games
+python run_frontend_data.py --parse-only # re-parse only (no fetch)
+```
+
+Output: **`data/frontend/raw/`** (manifest + raw CSVs), **`data/frontend/parsed/games/<id>_events.csv`**, **`data/frontend/parsed/game_elos.csv`**. Use **`src.inference.run_game_win_prob(game_id)`** to get play-by-play with `prob_home_win` for each event (no retraining).
+
+### Web frontend
+
+A small Flask app lets you search games by team or game ID and view win probability play-by-play:
+
+```bash
+# From project root (after run_frontend_data.py has populated data/frontend/)
+python run_web.py
+# or: python web/app.py
+```
+
+Open **http://127.0.0.1:5000**. Use **Team** to filter 2025-26 games, or enter a **Game ID** and click Load. Click a game to see a graph of win probability over every event; use the slider to scrub through and see the score and play description at each moment.
+
 ---
 
 ## Data layout
 
 ```
 data/
-├── raw/
+├── raw/                        # Training seasons (2022-23, 2023-24, 2024-25)
 │   ├── games_manifest.csv      # game_id, game_date, season_id, home/away team, pts, wl_home
 │   └── <game_id>.csv           # raw play-by-play (one per game)
+├── frontend/                   # Current season only (2025-26), not used for training
+│   ├── raw/                    # games_manifest.csv + <game_id>.csv
+│   └── parsed/
+│       ├── games/<id>_events.csv
+│       └── game_elos.csv       # game_id, home_elo, away_elo
 └── parsed/
     ├── events_dataset.csv      # all events + label_home_win, pts_*_final
     ├── training_dataset.csv    # one row per (game, event): features + home_elo, away_elo, label_home_win
@@ -137,26 +166,19 @@ Play-by-play is fetched from **cdn.nba.com**; no API key needed.
 
 ## Using the trained model
 
+**Play-by-play for a frontend game (2025-26):**
+
 ```python
-import joblib
-from src.game_state import GameState
-from src.config import PARSED_DIR
+from src.inference import run_game_win_prob
 
-bundle = joblib.load(PARSED_DIR / "win_prob_model.joblib")
-model, scaler = bundle["model"], bundle["scaler"]
-
-# Example: state at 5 min left in Q4, home up 4, home has ball
-state = GameState(
-    time_remaining_sec=300.0,
-    score_diff=4,
-    period=4,
-    possession="home",
-    is_home_court=True,
-)
-X = scaler.transform([list(state.to_feature_dict().values())])
-# For ELO you'd need to add home_elo, away_elo to the state/feature dict
-prob_home_win = model.predict_proba(X)[0, 1]
+# Returns list of { event_num, period, time_remaining_sec, home_score, away_score,
+#                   score_diff, possession, event_type, description, prob_home_win }
+rows = run_game_win_prob("0022500001")  # game_id from data/frontend/parsed/games/
+for r in rows[:5]:
+    print(r["event_num"], r["home_score"], r["away_score"], r["prob_home_win"])
 ```
+
+**Single-state prediction (e.g. custom state):** load `win_prob_model.joblib`, build a feature dict with `time_remaining_sec`, `score_diff`, `period`, `possession_home`, `is_home_court`, `home_elo`, `away_elo`, then `scaler.transform` and `model.predict_proba`.
 
 ---
 

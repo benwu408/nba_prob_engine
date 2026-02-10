@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NBA Win Probability</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #1a1a20;
+      --border: #2a2a32;
+      --text: #e8e8ed;
+      --muted: #8888a0;
+      --home: #34c759;
+      --away: #ff6b6b;
+      --accent: #5e5ce6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0 0 1.5rem 0;
+      color: var(--text);
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+    .controls label { color: var(--muted); font-size: 0.875rem; }
+    input, select, button {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.9375rem;
+    }
+    input::placeholder { color: var(--muted); }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      border: none;
+      font-weight: 500;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #gameList {
+      max-height: 280px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      margin-bottom: 1.5rem;
+    }
+    #gameList:empty::after { content: "Search by team or pick a game below."; color: var(--muted); display: block; padding: 1rem; }
+    .game-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto 1fr auto;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    .game-row:hover { background: rgba(255,255,255,0.04); }
+    .game-row:last-child { border-bottom: none; }
+    .game-date { color: var(--muted); }
+    .game-score { font-weight: 600; }
+    .chart-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .chart-panel h2 { font-size: 1rem; margin: 0 0 1rem 0; font-weight: 600; }
+    #chartContainer { position: relative; height: 280px; }
+    .event-scrubber {
+      margin-top: 1rem;
+    }
+    .event-scrubber label { font-size: 0.8125rem; color: var(--muted); }
+    .event-scrubber input[type="range"] {
+      width: 100%;
+      margin-top: 0.25rem;
+      accent-color: var(--accent);
+    }
+    .event-detail {
+      margin-top: 1rem;
+      padding: 1rem;
+      background: var(--bg);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      border: 1px solid var(--border);
+    }
+    .event-detail .prob-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .event-detail .prob-bar .bar {
+      flex: 1;
+      height: 8px;
+      border-radius: 4px;
+      background: var(--border);
+      overflow: hidden;
+      display: flex;
+    }
+    .event-detail .prob-bar .bar .home { background: var(--home); }
+    .event-detail .prob-bar .bar .away { background: var(--away); }
+    .event-detail .score { font-weight: 600; margin: 0.25rem 0; }
+    .event-detail .desc { color: var(--muted); margin-top: 0.5rem; }
+    .loading { color: var(--muted); }
+    .error { color: var(--away); }
+  </style>
+</head>
+<body>
+  <h1>NBA Win Probability</h1>
+  <div class="controls">
+    <div>
+      <label for="teamFilter">Team</label>
+      <select id="teamFilter">
+        <option value="">All teams</option>
+      </select>
+    </div>
+    <div>
+      <label for="gameIdInput">Game ID</label>
+      <input type="text" id="gameIdInput" placeholder="e.g. 0022500001" />
+    </div>
+    <div style="align-self: flex-end;">
+      <button type="button" id="loadGamesBtn">Load games</button>
+    </div>
+  </div>
+  <div id="gameList"></div>
+
+  <div class="chart-panel" id="chartPanel" style="display: none;">
+    <h2 id="chartTitle">Win probability by event</h2>
+    <div id="chartContainer"><canvas id="chart"></canvas></div>
+    <div class="event-scrubber">
+      <label>Event: <span id="eventIndexLabel">0</span> / <span id="eventTotalLabel">0</span></label>
+      <input type="range" id="eventSlider" min="0" max="0" value="0" />
+    </div>
+    <div class="event-detail" id="eventDetail"></div>
+  </div>
+
+  <div id="message" class="loading"></div>
+
+  <script>
+    const API = "";
+    let chart = null;
+    let currentEvents = [];
+
+    const teamFilter = document.getElementById("teamFilter");
+    const gameIdInput = document.getElementById("gameIdInput");
+    const loadGamesBtn = document.getElementById("loadGamesBtn");
+    const gameList = document.getElementById("gameList");
+    const chartPanel = document.getElementById("chartPanel");
+    const chartTitle = document.getElementById("chartTitle");
+    const eventSlider = document.getElementById("eventSlider");
+    const eventIndexLabel = document.getElementById("eventIndexLabel");
+    const eventTotalLabel = document.getElementById("eventTotalLabel");
+    const eventDetail = document.getElementById("eventDetail");
+    const messageEl = document.getElementById("message");
+
+    function setMessage(text, isError = false) {
+      messageEl.textContent = text;
+      messageEl.className = isError ? "error" : "loading";
+    }
+
+    async function fetchGames() {
+      const team = teamFilter.value;
+      const url = team ? `${API}/api/games?team=${encodeURIComponent(team)}` : `${API}/api/games`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || res.statusText);
+      }
+      return res.json();
+    }
+
+    function populateTeamFilter(games) {
+      const teams = new Set();
+      games.forEach(g => {
+        teams.add(g.home_team);
+        teams.add(g.away_team);
+      });
+      const opts = Array.from(teams).sort();
+      teamFilter.innerHTML = '<option value="">All teams</option>' + opts.map(t => `<option value="${t}">${t}</option>`).join("");
+    }
+
+    function renderGameList(games) {
+      gameList.innerHTML = games.map(g => {
+        const score = (g.pts_home != null && g.pts_away != null) ? `${g.pts_home} - ${g.pts_away}` : "—";
+        return `<div class="game-row" data-game-id="${g.game_id}" data-home="${g.home_team}" data-away="${g.away_team}">
+          <span class="game-date">${g.game_date}</span>
+          <span class="game-score">${g.away_team} @ ${g.home_team}</span>
+          <span>${score}</span>
+        </div>`;
+      }).join("");
+      gameList.querySelectorAll(".game-row").forEach(row => {
+        row.addEventListener("click", () => loadGameWinProb(row.dataset.gameId, row.dataset.home, row.dataset.away));
+      });
+    }
+
+    loadGamesBtn.addEventListener("click", async () => {
+      const gid = gameIdInput.value.trim();
+      if (gid) {
+        loadGameWinProb(gid.replace(/\D/g, "").padStart(10, "0"), null, null);
+        return;
+      }
+      setMessage("Loading games…");
+      try {
+        const data = await fetchGames();
+        const games = data.games || [];
+        if (games.length === 0) {
+          setMessage("No games found. Run run_frontend_data.py to fetch 2025-26 data.");
+          gameList.innerHTML = "";
+          return;
+        }
+        if (teamFilter.options.length <= 1) populateTeamFilter(games);
+        renderGameList(games);
+        setMessage("");
+      } catch (e) {
+        setMessage(e.message || "Failed to load games", true);
+      }
+    });
+
+    async function loadGameWinProb(gameId, homeTeam, awayTeam) {
+      setMessage("Loading win probability…");
+      chartPanel.style.display = "none";
+      try {
+        const res = await fetch(`${API}/api/game/${gameId}/win_prob`);
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || res.statusText);
+        }
+        const data = await res.json();
+        currentEvents = data.events || [];
+        if (currentEvents.length === 0) {
+          setMessage("No events for this game.");
+          return;
+        }
+        setMessage("");
+        chartTitle.textContent = (homeTeam && awayTeam) ? `Win probability: ${awayTeam} @ ${homeTeam}` : "Win probability by event";
+        chartPanel.style.display = "block";
+        drawChart(currentEvents);
+        eventSlider.min = 0;
+        eventSlider.max = currentEvents.length - 1;
+        eventSlider.value = 0;
+        eventTotalLabel.textContent = currentEvents.length;
+        updateEventDetail(0);
+      } catch (e) {
+        setMessage(e.message || "Failed to load game", true);
+      }
+    }
+
+    function drawChart(events) {
+      const ctx = document.getElementById("chart").getContext("2d");
+      if (chart) chart.destroy();
+      const labels = events.map((_, i) => i);
+      const probs = events.map(e => e.prob_home_win);
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label: "P(home wins)",
+            data: probs,
+            borderColor: "#34c759",
+            backgroundColor: "rgba(52, 199, 89, 0.1)",
+            fill: true,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: "index" },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (item) => `Event ${item.dataIndex}: ${(item.raw * 100).toFixed(1)}% home`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              title: { display: true, text: "Event" },
+              grid: { color: "rgba(255,255,255,0.06)" },
+              ticks: { color: "#8888a0", maxTicksLimit: 12 },
+            },
+            y: {
+              min: 0,
+              max: 1,
+              title: { display: true, text: "P(home wins)" },
+              grid: { color: "rgba(255,255,255,0.06)" },
+              ticks: { color: "#8888a0", callback: v => (v * 100).toFixed(0) + "%" },
+            },
+          },
+        },
+        plugins: [{
+          id: "eventLine",
+          afterDraw: (ch) => {
+            const idx = parseInt(eventSlider.value, 10);
+            if (idx < 0 || !ch.scales.x) return;
+            const x = ch.scales.x.getPixelForValue(idx);
+            const left = ch.chart.left;
+            const right = ch.chart.right;
+            if (x < left || x > right) return;
+            const ctx = ch.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.strokeStyle = "rgba(94, 92, 230, 0.8)";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.moveTo(x, ch.scales.y.top);
+            ctx.lineTo(x, ch.scales.y.bottom);
+            ctx.stroke();
+            ctx.restore();
+          },
+        }],
+      });
+    }
+
+    function updateEventDetail(index) {
+      eventIndexLabel.textContent = index + 1;
+      const e = currentEvents[index];
+      if (!e) return;
+      const homePct = (e.prob_home_win * 100).toFixed(1);
+      const awayPct = (100 - e.prob_home_win * 100).toFixed(1);
+      const min = Math.floor(e.time_remaining_sec / 60);
+      const sec = Math.floor(e.time_remaining_sec % 60);
+      const timeStr = `Q${e.period} ${min}:${sec.toString().padStart(2, "0")} left`;
+      eventDetail.innerHTML = `
+        <div class="prob-bar">
+          <span style="width:4rem;">Home ${homePct}%</span>
+          <div class="bar">
+            <span class="home" style="width:${homePct}%"></span>
+            <span class="away" style="width:${awayPct}%"></span>
+          </div>
+          <span style="width:4rem;">Away ${awayPct}%</span>
+        </div>
+        <div class="score">${e.away_score} – ${e.home_score} (${timeStr})</div>
+        <div class="desc">${e.description || e.event_type || "—"}</div>
+      `;
+      if (chart) chart.update("none");
+    }
+
+    eventSlider.addEventListener("input", () => updateEventDetail(parseInt(eventSlider.value, 10)));
+
+    // Load games on first load so user can pick
+    loadGamesBtn.click();
+  </script>
+</body>
+</html>

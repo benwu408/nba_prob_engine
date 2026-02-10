@@ -13,6 +13,12 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PARSED_DIR = DATA_DIR / "parsed"
 
+# Frontend / inference: current-season games only (not used for training)
+FRONTEND_DIR = DATA_DIR / "frontend"
+FRONTEND_RAW_DIR = FRONTEND_DIR / "raw"
+FRONTEND_PARSED_DIR = FRONTEND_DIR / "parsed"
+FRONTEND_SEASON = "2025-26"
+
 # Season format for nba_api: "2023-24" for 2023-24 season
 DEFAULT_SEASON = "2023-24"
 
