@@ -1,0 +1,23 @@
+# Data (run pipeline to regenerate)
+data/raw/*.csv
+data/parsed/*.csv
+data/parsed/games/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+*.egg-info/
+.eggs/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Trained model (regenerate with run_train.py)
+data/parsed/*.joblib
