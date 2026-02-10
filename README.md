@@ -1,112 +1,104 @@
 # NBA Win Probability Engine
 
-Data pipeline (Step 0) for the Sports Win Probability project: fetch historical NBA play-by-play from **nba_api**, parse it into normalized events, and produce a single dataset for training a win-probability model.
+Predict in-game win probability from play-by-play: **fetch** → **parse** → **replay** (with per-season ELO) → **train** a logistic regression. One pipeline from raw NBA data to a saved model.
 
 ---
 
-## Overview
+## What it does
 
-1. **Fetch** — Get game list for a season (e.g. 2023–24) via `LeagueGameFinder`, then download raw play-by-play per game from the `PlayByPlay` endpoint. Saves one CSV per game under `data/raw/` and a `games_manifest.csv`.
-2. **Parse** — Turn each raw play-by-play CSV into a sequence of **normalized events** (score, time, possession, event type). Merge all games into **`events_dataset.csv`** with labels for training (`label_home_win`, final scores).
+| Step | Script | Output |
+|------|--------|--------|
+| **Fetch** | `run_pipeline.py` | Raw play-by-play CSVs + `games_manifest.csv` |
+| **Parse** | `run_pipeline.py --parse-only` | `events_dataset.csv` + per-game `*_events.csv` |
+| **Replay** | `run_replay.py` | `training_dataset.csv` (state features + ELO + label) |
+| **Train** | `run_train.py` | `win_prob_model.joblib` (model + scaler) |
 
-Later steps (not in this repo yet): define `GameState`, `apply_event()`, train a model, and build the real-time + viz pipeline.
-
----
-
-## What’s included
-
-- **Code:** `src/fetch.py`, `src/parse_events.py`, `src/config.py`, and `run_pipeline.py` (CLI).
-- **Sample data:** One **sample game** (`0022301234`) in `data/raw/` so you can run the parser without calling the NBA API. This is not a full season — only enough to validate the pipeline and output format.
+**Features:** time left, score differential, period, possession, home court, **home/away ELO** (per season).  
+**Label:** did the home team win the game?
 
 ---
 
-## Setup
+## Quick start
 
 ```bash
+# 1. Install
 pip install -r requirements.txt
-```
 
-Requires Python 3.10+ (uses `|` for optional types).
+# 2. Fetch one season (or --all-seasons for 2022-23, 2023-24, 2024-25)
+python run_pipeline.py --season 2023-24 --limit 100
 
----
-
-## Quick start (no API)
-
-Run the parser on the included sample game:
-
-```bash
+# 3. Parse raw → events
 python run_pipeline.py --parse-only
+
+# 4. Replay games → training rows (with ELO from manifest)
+python run_replay.py
+
+# 5. Train and save model
+python run_train.py
 ```
 
-You should see:
-
-- **`data/parsed/events_dataset.csv`** — all events with labels.
-- **`data/parsed/games/0022301234_events.csv`** — events for that one game (no labels).
+You’ll see validation accuracy and “first 8 min” accuracy (where ELO helps most), plus coefficients.
 
 ---
 
-## Full pipeline (fetch + parse)
+## Pipeline in detail
 
-Fetch games for a season and download play-by-play (then parse by default):
+### Fetch
 
-```bash
-python run_pipeline.py --season 2023-24
-```
-
-To only download raw data and skip parsing:
+- **nba_api** `LeagueGameFinder` for game list; play-by-play from **cdn.nba.com** (no stats.nba.com timeouts).
+- Saves `data/raw/<game_id>.csv` and merges into `data/raw/games_manifest.csv` (game_id, game_date, season_id, home/away team, final score).
 
 ```bash
-python run_pipeline.py --season 2023-24 --fetch-only
+python run_pipeline.py --season 2024-25          # one season
+python run_pipeline.py --all-seasons             # 2022-23, 2023-24, 2024-25
+python run_pipeline.py --season 2023-24 --limit 50
+python run_pipeline.py --parse-only              # only parse existing raw files
 ```
 
-To re-parse after you have more raw files (without re-fetching):
+### Parse
+
+- Converts raw play-by-play into **normalized events** (period, time, score, possession, event_type, points_scored).
+- Writes **`data/parsed/events_dataset.csv`** (all events + `label_home_win`, final scores) and **`data/parsed/games/<game_id>_events.csv`** per game.
+
+### Replay + ELO
+
+- **Replay:** For each game, start at tip-off and `apply_event(state, event)` at every play; emit (state features, label) for training.
+- **ELO:** Per **season** (from manifest), teams start at 1500; after each game ELO updates by the usual formula (K=20). Each training row gets **home_elo** and **away_elo** (pre-game) so the model can use team strength, especially early in games.
 
 ```bash
-python run_pipeline.py --parse-only
+python run_replay.py                  # all games, ELO from manifest
+python run_replay.py --every-n 10     # sample every 10th event
+python run_replay.py --no-elo        # skip ELO (no manifest needed)
 ```
 
-### CLI options
+### Train
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--season` | `2023-24` | Season (e.g. `2022-23`). |
-| `--limit N` | None | Max number of games to fetch (for testing). |
-| `--fetch-only` | off | Only fetch; do not parse. |
-| `--parse-only` | off | Only parse existing raw CSVs; do not fetch. |
-| `--raw-dir DIR` | `data/raw` | Directory for raw CSVs and manifest. |
+- **Split:** 80% / 20% of **games** (not rows) for train/val so no game leaks across splits.
+- **Scale:** `StandardScaler` on train only.
+- **Model:** `LogisticRegression`; reports validation log loss, accuracy, and accuracy in the **first 8 minutes** (where ELO matters most).
+
+```bash
+python run_train.py
+```
 
 ---
 
-## Data format
+## Data layout
 
-### Raw (per game)
+```
+data/
+├── raw/
+│   ├── games_manifest.csv      # game_id, game_date, season_id, home/away team, pts, wl_home
+│   └── <game_id>.csv           # raw play-by-play (one per game)
+└── parsed/
+    ├── events_dataset.csv      # all events + label_home_win, pts_*_final
+    ├── training_dataset.csv    # one row per (game, event): features + home_elo, away_elo, label_home_win
+    ├── win_prob_model.joblib   # { "model", "scaler" } (after run_train.py)
+    └── games/
+        └── <game_id>_events.csv   # events for one game (for replay input)
+```
 
-- **`data/raw/<game_id>.csv`** — nba_api play-by-play columns: `GAME_ID`, `EVENTNUM`, `EVENTMSGTYPE`, `PERIOD`, `PCTIMESTRING`, `HOMEDESCRIPTION`, `VISITORDESCRIPTION`, `SCORE`, etc.
-- **`data/raw/games_manifest.csv`** — one row per game: `game_id`, `game_date`, `home_team_id`, `away_team_id`, `home_team_abbrev`, `away_team_abbrev`, `pts_home`, `pts_away`, `wl_home`.
-
-### Parsed (dataset)
-
-**`data/parsed/events_dataset.csv`** — one row per event:
-
-| Column | Description |
-|--------|-------------|
-| `game_id` | 10-character game ID. |
-| `event_num` | Event number in the feed. |
-| `period` | Quarter (1–4+, OT). |
-| `time_remaining_sec` | Seconds left in the period. |
-| `home_score` | Home team score after this event. |
-| `away_score` | Away team score after this event. |
-| `possession` | `home` or `away` when inferrable; else empty. |
-| `event_type` | See below. |
-| `points_scored` | Points on this play (0, 1, 2, or 3). |
-| `description` | Short play description. |
-| `label_home_win` | 1 if home won the game, 0 otherwise. |
-| `pts_home_final` | Final home score. |
-| `pts_away_final` | Final away score. |
-
-**Event types:** `made_2`, `made_3`, `miss_2`, `miss_3`, `free_throw_made`, `free_throw_miss`, `turnover`, `rebound`, `foul`, `timeout`, `jump_ball`, `period_start`, `period_end`, `substitution`, `violation`, `ejection`, `instant_replay`, `other`.
-
-**`data/parsed/games/<game_id>_events.csv`** — same event columns per game, without `label_home_win` / `pts_*_final`, for replay and Step 2.
+**Training features:** `time_remaining_sec`, `score_diff`, `period`, `possession_home`, `is_home_court`, `home_elo`, `away_elo`.
 
 ---
 
@@ -114,47 +106,76 @@ python run_pipeline.py --parse-only
 
 ```
 nba_prob_engine/
-├── data/
-│   ├── raw/                      # Raw play-by-play: <game_id>.csv + games_manifest.csv
-│   └── parsed/                   # events_dataset.csv + games/<game_id>_events.csv
+├── data/raw/              # Raw play-by-play + manifest
+├── data/parsed/           # Events, training CSV, model, per-game CSVs
+├── docs/
 ├── src/
-│   ├── config.py                 # Paths, DEFAULT_SEASON, REQUEST_DELAY_SEC
-│   ├── fetch.py                  # get_games(), fetch_playbyplay(), fetch_all()
-│   └── parse_events.py           # parse_pbp(), parse_all_games(), load_game_manifest()
-├── run_pipeline.py               # CLI entrypoint
+│   ├── config.py          # Paths, default season
+│   ├── fetch.py           # get_games(), fetch_playbyplay(), fetch_all(_seasons)
+│   ├── parse_events.py    # parse_pbp(), parse_all_games()
+│   ├── game_state.py      # GameState, apply_event(), initial_state(), to_feature_dict()
+│   ├── elo.py             # compute_elo_per_game() per season
+│   ├── replay_games.py     # replay_one_game(), replay_all_games()
+│   └── train.py           # load_training_data(), train_val_split(), scale, fit, evaluate, save
+├── run_pipeline.py        # Fetch + parse CLI
+├── run_replay.py          # Replay + ELO → training_dataset.csv
+├── run_train.py           # Train model, print metrics, save joblib
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## nba_api (library we use)
+## Requirements
 
-**[nba_api](https://github.com/swar/nba_api)** is a Python client for NBA.com’s APIs. It does not provide its own data; it calls stats.nba.com (and optionally live endpoints) and returns JSON or Pandas DataFrames.
+- **Python 3.10+**
+- **nba_api**, **pandas**, **numpy**, **scikit-learn**, **requests** (see `requirements.txt`)
 
-- **Install:** `pip install nba_api` (we list it in `requirements.txt`).
-- **Docs:** [GitHub repo](https://github.com/swar/nba_api), [Table of Contents](https://github.com/swar/nba_api/blob/master/docs/table_of_contents.md), [Endpoints](https://github.com/swar/nba_api/tree/master/docs/nba_api/stats/endpoints). [Stats Examples](https://github.com/swar/nba_api/blob/master/docs/nba_api/stats/examples.md) (proxy, custom headers, timeout) — local copy: [`docs/nba_api_stats_examples.md`](docs/nba_api_stats_examples.md). Jupyter: [Finding Games](https://github.com/swar/nba_api/blob/master/docs/examples/Finding%20Games.ipynb), [PlayByPlay](https://github.com/swar/nba_api/blob/master/docs/examples/PlayByPlay.ipynb).
-- **What this project uses:**
-  - **`nba_api.stats.endpoints.leaguegamefinder.LeagueGameFinder`** — list games by season (and optional team). We use `season_nullable`, `season_type_nullable=SeasonType.regular`. Returns one row per team per game (so two rows per game); we merge to one row per game with home/away.
-  - **`nba_api.stats.endpoints.playbyplay.PlayByPlay`** — raw play-by-play for one game (param `game_id`). Returns a DataFrame with columns like `GAME_ID`, `EVENTNUM`, `EVENTMSGTYPE`, `PERIOD`, `PCTIMESTRING`, `HOMEDESCRIPTION`, `VISITORDESCRIPTION`, `SCORE`, `SCOREMARGIN`. We parse these in `src/parse_events.py`.
-- **Other useful parts of nba_api:** `nba_api.stats.static.teams` / `players` for IDs and names; `nba_api.live.nba.endpoints` for live scoreboard/game data (we don’t use those in this pipeline).
+Play-by-play is fetched from **cdn.nba.com**; no API key needed.
 
 ---
 
-## API notes (behavior / gotchas)
+## Using the trained model
 
-**Fetch uses cdn.nba.com (live) by default** so it does not block or timeout on stats.nba.com:
+```python
+import joblib
+from src.game_state import GameState
+from src.config import PARSED_DIR
 
-- We request `https://cdn.nba.com/static/json/liveData/playbyplay/playbyplay_{game_id}.json` and convert the response into the same DataFrame shape as stats, so the parser is unchanged.
-- **No stats.nba.com call** is made unless you set `try_stats_first=True` in code (e.g. if you want to try stats then fall back to live).
+bundle = joblib.load(PARSED_DIR / "win_prob_model.joblib")
+model, scaler = bundle["model"], bundle["scaler"]
 
-So `python run_pipeline.py --season 2023-24` should complete without timeouts. If a game has no data on cdn.nba.com (rare), that game will be in the failed list.
+# Example: state at 5 min left in Q4, home up 4, home has ball
+state = GameState(
+    time_remaining_sec=300.0,
+    score_diff=4,
+    period=4,
+    possession="home",
+    is_home_court=True,
+)
+X = scaler.transform([list(state.to_feature_dict().values())])
+# For ELO you'd need to add home_elo, away_elo to the state/feature dict
+prob_home_win = model.predict_proba(X)[0, 1]
+```
 
 ---
 
-## Next steps (roadmap)
+## CLI reference
 
-- **Step 1** — Define `GameState` (time, score, possession, period, home-court, etc.) and update it from parsed events.
-- **Step 2** — Implement `parse_event(raw) -> Event` and `apply_event(state, event) -> new_state`.
-- **Step 3** — Build training examples: sample (state → label) from replayed games.
-- **Step 4+** — Train baseline model (e.g. logistic regression / GBDT), real-time loop, visualization.
+| Script | Option | Description |
+|--------|--------|-------------|
+| **run_pipeline** | `--season X` | Season (e.g. `2023-24`). |
+| | `--all-seasons` | Fetch 2022-23, 2023-24, 2024-25. |
+| | `--limit N` | Max games per season (testing). |
+| | `--fetch-only` | Only fetch; don’t parse. |
+| | `--parse-only` | Only parse existing raw CSVs. |
+| **run_replay** | `--every-n N` | Emit a row every N events (default 1). |
+| | `--limit N` | Replay only N games (testing). |
+| | `--no-elo` | Don’t add ELO (no manifest). |
+| **run_train** | *(none)* | Load data, split, scale, train, evaluate, save. |
+
+---
+
+## License
+
+Use and modify as you like. Data from NBA.com; respect their terms for production use.
