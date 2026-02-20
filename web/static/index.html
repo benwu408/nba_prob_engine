@@ -122,6 +122,7 @@
     .event-detail .prob-bar .bar .home { background: var(--home); }
     .event-detail .prob-bar .bar .away { background: var(--away); }
     .event-detail .score { font-weight: 600; margin: 0.25rem 0; }
+    .event-detail .event-type { color: var(--accent); margin-top: 0.35rem; font-size: 0.8125rem; }
     .event-detail .desc { color: var(--muted); margin-top: 0.5rem; }
     .loading { color: var(--muted); }
     .error { color: var(--away); }
@@ -357,7 +358,8 @@
           <span style="width:4rem;">Away ${awayPct}%</span>
         </div>
         <div class="score">${e.away_score} – ${e.home_score} (${timeStr})</div>
-        <div class="desc">${e.description || e.event_type || "—"}</div>
+        <div class="event-type">Event: ${e.event_type || "—"}</div>
+        <div class="desc">${e.description && String(e.description) !== "nan" ? e.description : ""}</div>
       `;
       if (chart) chart.update("none");
     }
